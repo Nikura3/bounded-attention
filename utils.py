@@ -5,6 +5,7 @@ from sklearn.decomposition import PCA
 from torchvision import transforms
 import matplotlib.pyplot as plt
 import torch
+import random
 
 import os
 
@@ -229,3 +230,11 @@ def show_image_relevance(image_relevance, image: Image.Image = None, relevnace_r
     vis = np.uint8(255 * vis)
     vis = cv2.cvtColor(np.array(vis), cv2.COLOR_RGB2BGR)
     return vis
+
+
+
+def seed_everything(seed):
+    # np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    random.seed(seed)

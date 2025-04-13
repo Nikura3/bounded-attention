@@ -217,9 +217,15 @@ class BoundedAttention(injection_utils.AttentionBase):
         tags = self._tag_tokens()
         leading_token_indices = []
         for indices in self.subject_token_indices:
-            subject_noun_indices = [i for i in indices if tags[i - 1].startswith('NN')]
+            # Only keep indices that are within bounds and point to nouns
+            subject_noun_indices = [i for i in indices if 0 < i <= len(tags) and tags[i - 1].startswith('NN')]
+            
+            # If we have at least one noun token, use that; otherwise, fall back to the original indices
             leading_token_candidates = subject_noun_indices if len(subject_noun_indices) > 0 else indices
+            
+            # Take the last candidate (usually the main subject token)
             leading_token_indices.append(leading_token_candidates[-1])
+
 
         self.leading_token_indices = leading_token_indices
 
