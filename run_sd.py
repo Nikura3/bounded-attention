@@ -19,6 +19,47 @@ import torchvision.transforms.functional as tf
 from torchvision import transforms
 
 
+def get_tokens_for_phrases(tokenizer, prompt, phrases):
+    """
+    Given a tokenizer, prompt, and list of phrases,
+    returns the list of token indices corresponding to each phrase.
+    """
+    # Tokenize the full prompt
+    inputs = tokenizer(prompt, return_tensors="pt")
+    input_ids = inputs.input_ids[0]  # tensor shape (sequence_length,)
+
+    # Decode the full prompt tokens to string tokens
+    decoded_tokens = [tokenizer.decode([token_id]).strip() for token_id in input_ids]
+
+    phrase_tokens_list = []
+
+    for phrase in phrases:
+        # Tokenize the phrase
+        phrase_ids = tokenizer(phrase, add_special_tokens=False).input_ids
+        phrase_tokens = [tokenizer.decode([token_id]).strip() for token_id in phrase_ids]
+
+        # Find the matching token span
+        match = find_sublist(decoded_tokens, phrase_tokens)
+
+        if match is not None:
+            phrase_tokens_list.append(list(range(match[0], match[1]+1)))
+        else:
+            print(f"Warning: Could not find phrase '{phrase}' in prompt!")
+            phrase_tokens_list.append([])
+
+    return phrase_tokens_list
+
+def find_sublist(full_list, sublist):
+    """
+    Finds the start and end indices of sublist in full_list.
+    Returns (start_idx, end_idx) or None if not found.
+    """
+    for i in range(len(full_list) - len(sublist) + 1):
+        if full_list[i:i+len(sublist)] == sublist:
+            return (i, i + len(sublist) - 1)
+    return None
+
+
 def normalize_data(data, size=512):
     return [ [coord / size for coord in box] for box in data ]
 
@@ -30,16 +71,16 @@ def read_prompts_csv(path):
             'prompt': df.at[i, 'prompt'],
             'obj1': df.at[i, 'obj1'],
             'bbox1': df.at[i, 'bbox1'],
-            'token1': df.at[i, 'token1'],
+            # 'token1': df.at[i, 'token1'],
             'obj2': df.at[i, 'obj2'],
             'bbox2': df.at[i, 'bbox2'],
-            'token2': df.at[i, 'token2'],
+            # 'token2': df.at[i, 'token2'],
             'obj3': df.at[i, 'obj3'],
             'bbox3': df.at[i, 'bbox3'],
-            'token3': df.at[i, 'token3'],
+            # 'token3': df.at[i, 'token3'],
             'obj4': df.at[i, 'obj4'],
             'bbox4': df.at[i, 'bbox4'],
-            'token4': df.at[i, 'token4'],
+            # 'token4': df.at[i, 'token4'],
         }
     return conversion_dict
 
@@ -86,21 +127,20 @@ def main():
 
         if not (isinstance(bench[id]['obj1'], (int, float)) and math.isnan(bench[id]['obj1'])):
             phrases.append(bench[id]['obj1'])
-            tokens.append([int(bench[id]['token1'])])
+            # tokens.append([int(bench[id]['token1'])])
             bboxes.append([int(x) for x in bench[id]['bbox1'].split(',')])
         if not (isinstance(bench[id]['obj2'], (int, float)) and math.isnan(bench[id]['obj2'])):
             phrases.append(bench[id]['obj2'])
-            tokens.append([int(bench[id]['token2'])])
+            # tokens.append([int(bench[id]['token2'])])
             bboxes.append([int(x) for x in bench[id]['bbox2'].split(',')])
         if not (isinstance(bench[id]['obj3'], (int, float)) and math.isnan(bench[id]['obj3'])):
             phrases.append(bench[id]['obj3'])
-            tokens.append([int(bench[id]['token3'])])
+            # tokens.append([int(bench[id]['token3'])])
             bboxes.append([int(x) for x in bench[id]['bbox3'].split(',')])
         if not (isinstance(bench[id]['obj4'], (int, float)) and math.isnan(bench[id]['obj4'])):
             phrases.append(bench[id]['obj4'])
-            tokens.append([int(bench[id]['token4'])])
+            # tokens.append([int(bench[id]['token4'])])
             bboxes.append([int(x) for x in bench[id]['bbox4'].split(',')])
-
 
         output_path = "./results/"+model_name+"/"+ id +'_'+bench[id]['prompt'] + "/"
 
@@ -113,11 +153,14 @@ def main():
         gen_images=[]
         gen_bboxes_images=[]
         #BB: [xmin, ymin, xmax, ymax] normalized between 0 and 1
+
         prompt = bench[id]['prompt']
+        tokens = get_tokens_for_phrases(model.tokenizer, prompt, phrases)
         normalized_boxes = normalize_data(bboxes)
 
+
         print(f"Prompt: {prompt}")
-        print(f"# of bboxes: {len(normalized_boxes[0])}")
+        print(f"# of bboxes: {len(normalized_boxes)}")
         
         for seed in seeds:
             print(f"Current seed is : {seed}")
