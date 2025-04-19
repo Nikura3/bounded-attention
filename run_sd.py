@@ -85,7 +85,6 @@ def read_prompts_csv(path):
     return conversion_dict
 
 
-
 def load_model(device):
     scheduler = DDIMScheduler(beta_start=0.00085, beta_end=0.012, beta_schedule="scaled_linear", clip_sample=False, set_alpha_to_one=False)
     model = StableDiffusionPipeline.from_pretrained("runwayml/stable-diffusion-v1-5", scheduler=scheduler, cross_attention_kwargs={"scale": 0.5}, torch_dtype=torch.float16, use_safetensors=True).to(device)
@@ -95,12 +94,10 @@ def load_model(device):
 
 
 def main():
-    height = 512
-    width = 512
     seeds = range(1,17)
-    bench = read_prompts_csv(os.path.join("prompts","shortPromptCollection.csv"))
+    bench = read_prompts_csv(os.path.join("prompts","promptCollection.csv"))
 
-    model_name="shortPromptCollection-BA"
+    model_name="promptCollection-BA"
         
     if (not os.path.isdir("./results/"+model_name)):
         os.makedirs("./results/"+model_name)
@@ -160,7 +157,7 @@ def main():
 
 
         print(f"Prompt: {prompt}")
-        print(f"# of bboxes: {len(normalized_boxes)}")
+        print(f"# of bboxes: {len(tokens)}")
         
         for seed in seeds:
             print(f"Current seed is : {seed}")
@@ -225,6 +222,11 @@ def main():
         # save a grid of results across all seeds with bboxes
         tf.to_pil_image(torchvision.utils.make_grid(tensor=gen_bboxes_images,nrow=4,padding=0)).save(output_path +"/"+ bench[id]['prompt'] + "_bboxes.png")
 
+    # log gpu stats
+    l.log_gpu_memory_instance()
+    # save to csv_file
+    l.save_log_to_csv(model_name)
+    print("End of generation process")
 
 if __name__ == "__main__":
     main()

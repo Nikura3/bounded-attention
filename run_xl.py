@@ -3,12 +3,86 @@ import torch
 
 from diffusers import DDIMScheduler
 from pipeline_stable_diffusion_xl_opt import StableDiffusionXLPipeline
-from pytorch_lightning import seed_everything
+# from pytorch_lightning import seed_everything
 
 from injection_utils import register_attention_editor_diffusers
 from bounded_attention import BoundedAttention
 import utils
 
+import pandas as pd
+from logger import logger
+from utils import seed_everything
+import time
+import math
+import torchvision.utils
+import torchvision.transforms.functional as tf
+from torchvision import transforms
+
+
+def get_tokens_for_phrases(tokenizer, prompt, phrases):
+    """
+    Given a tokenizer, prompt, and list of phrases,
+    returns the list of token indices corresponding to each phrase.
+    """
+    # Tokenize the full prompt
+    inputs = tokenizer(prompt, return_tensors="pt")
+    input_ids = inputs.input_ids[0]  # tensor shape (sequence_length,)
+
+    # Decode the full prompt tokens to string tokens
+    decoded_tokens = [tokenizer.decode([token_id]).strip() for token_id in input_ids]
+
+    phrase_tokens_list = []
+
+    for phrase in phrases:
+        # Tokenize the phrase
+        phrase_ids = tokenizer(phrase, add_special_tokens=False).input_ids
+        phrase_tokens = [tokenizer.decode([token_id]).strip() for token_id in phrase_ids]
+
+        # Find the matching token span
+        match = find_sublist(decoded_tokens, phrase_tokens)
+
+        if match is not None:
+            phrase_tokens_list.append(list(range(match[0], match[1]+1)))
+        else:
+            print(f"Warning: Could not find phrase '{phrase}' in prompt!")
+            phrase_tokens_list.append([])
+
+    return phrase_tokens_list
+
+def find_sublist(full_list, sublist):
+    """
+    Finds the start and end indices of sublist in full_list.
+    Returns (start_idx, end_idx) or None if not found.
+    """
+    for i in range(len(full_list) - len(sublist) + 1):
+        if full_list[i:i+len(sublist)] == sublist:
+            return (i, i + len(sublist) - 1)
+    return None
+
+
+def normalize_data(data, size=512):
+    return [ [coord / size for coord in box] for box in data ]
+
+def read_prompts_csv(path):
+    df = pd.read_csv(path, dtype={'id': str})
+    conversion_dict = {}
+    for i in range(len(df)):
+        conversion_dict[df.at[i, 'id']] = {
+            'prompt': df.at[i, 'prompt'],
+            'obj1': df.at[i, 'obj1'],
+            'bbox1': df.at[i, 'bbox1'],
+            # 'token1': df.at[i, 'token1'],
+            'obj2': df.at[i, 'obj2'],
+            'bbox2': df.at[i, 'bbox2'],
+            # 'token2': df.at[i, 'token2'],
+            'obj3': df.at[i, 'obj3'],
+            'bbox3': df.at[i, 'bbox3'],
+            # 'token3': df.at[i, 'token3'],
+            'obj4': df.at[i, 'obj4'],
+            'bbox4': df.at[i, 'bbox4'],
+            # 'token4': df.at[i, 'token4'],
+        }
+    return conversion_dict
 
 def load_model(device):
     scheduler = DDIMScheduler(beta_start=0.00085, beta_end=0.012, beta_schedule="scaled_linear", clip_sample=False, set_alpha_to_one=False)
@@ -18,81 +92,142 @@ def load_model(device):
     return model
 
 
-def run(
-    boxes,
-    prompt,
-    subject_token_indices,
-    out_dir='out',
-    seed=160,
-    batch_size=1,
-    filter_token_indices=None,
-    eos_token_index=None,
-    init_step_size=18,
-    final_step_size=5,
-    first_refinement_step=15,
-    num_clusters_per_subject=3,
-    cross_loss_scale=1.5,
-    self_loss_scale=0.5,
-    classifier_free_guidance_scale=7.5,
-    num_gd_iterations=5,
-    loss_threshold=0.2,
-    num_guidance_steps=15,
-):
+def main():
+    height = 512
+    width = 512
+    seeds = range(1,17)
+    bench = read_prompts_csv(os.path.join("prompts","shortPromptCollection.csv"))
+
+    model_name="shortPromptCollection-BA"
+        
+    if (not os.path.isdir("./results/"+model_name)):
+        os.makedirs("./results/"+model_name)
+    
+    #intialize logger
+    l=logger.Logger("./results/"+model_name+"/")
+
     device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
     model = load_model(device)
 
-    seed_everything(seed)
-    prompts = [prompt] * batch_size
-    start_code = torch.randn([len(prompts), 4, 128, 128], device=device)
+    to_pil = transforms.ToPILImage()
 
-    os.makedirs(out_dir, exist_ok=True)
-    sample_count = len(os.listdir(out_dir))
-    out_dir = os.path.join(out_dir, f"sample_{sample_count}")
-    os.makedirs(out_dir)
+    # ids to iterate the dict
+    ids = []
+    for i in range(0,len(bench)):
+        ids.append(str(i).zfill(3))
 
-    editor = BoundedAttention(
-        boxes,
-        prompts,
-        subject_token_indices,
-        list(range(70, 82)),
-        list(range(70, 82)),
-        filter_token_indices=filter_token_indices,
-        eos_token_index=eos_token_index,
-        cross_loss_coef=cross_loss_scale,
-        self_loss_coef=self_loss_scale,
-        max_guidance_iter=num_guidance_steps,
-        max_guidance_iter_per_step=num_gd_iterations,
-        start_step_size=init_step_size,
-        end_step_size=final_step_size,
-        loss_stopping_value=loss_threshold,
-        min_clustering_step=first_refinement_step,
-        num_clusters_per_box=num_clusters_per_subject,
-    )
+    print("Start of generation process")
 
-    register_attention_editor_diffusers(model, editor)
-    images = model(prompts, latents=start_code, guidance_scale=classifier_free_guidance_scale).images
+    for id in ids:
+        bboxes = []
+        phrases = []
+        tokens = []  # e.g. [[2,4], [6,9]]
 
-    for i, image in enumerate(images):
-        image.save(os.path.join(out_dir, f'{seed}_{i}.png'))
-        utils.draw_box(image, boxes).save(os.path.join(out_dir, f'{seed}_{i}_boxes.png'))
+        if not (isinstance(bench[id]['obj1'], (int, float)) and math.isnan(bench[id]['obj1'])):
+            phrases.append(bench[id]['obj1'])
+            # tokens.append([int(bench[id]['token1'])])
+            bboxes.append([int(x) for x in bench[id]['bbox1'].split(',')])
+        if not (isinstance(bench[id]['obj2'], (int, float)) and math.isnan(bench[id]['obj2'])):
+            phrases.append(bench[id]['obj2'])
+            # tokens.append([int(bench[id]['token2'])])
+            bboxes.append([int(x) for x in bench[id]['bbox2'].split(',')])
+        if not (isinstance(bench[id]['obj3'], (int, float)) and math.isnan(bench[id]['obj3'])):
+            phrases.append(bench[id]['obj3'])
+            # tokens.append([int(bench[id]['token3'])])
+            bboxes.append([int(x) for x in bench[id]['bbox3'].split(',')])
+        if not (isinstance(bench[id]['obj4'], (int, float)) and math.isnan(bench[id]['obj4'])):
+            phrases.append(bench[id]['obj4'])
+            # tokens.append([int(bench[id]['token4'])])
+            bboxes.append([int(x) for x in bench[id]['bbox4'].split(',')])
 
-    print("Syntheiszed images are saved in", out_dir)
+        output_path = "./results/"+model_name+"/"+ id +'_'+bench[id]['prompt'] + "/"
+
+        if (not os.path.isdir(output_path)):
+            os.makedirs(output_path)
+
+        print("Sample number ", id)
+        torch.cuda.empty_cache()
+
+        gen_images=[]
+        gen_bboxes_images=[]
+        #BB: [xmin, ymin, xmax, ymax] normalized between 0 and 1
+
+        prompt = bench[id]['prompt']
+        tokens = get_tokens_for_phrases(model.tokenizer, prompt, phrases)
+        normalized_boxes = normalize_data(bboxes)
 
 
-def main():
-    boxes = [
-        [0, 0.5, 0.2, 0.8],
-        [0.2, 0.2, 0.4, 0.5],
-        [0.4, 0.5, 0.6, 0.8],
-        [0.6, 0.2, 0.8, 0.5],
-        [0.8, 0.5, 1, 0.8],
-    ]
+        print(f"Prompt: {prompt}")
+        print(f"# of bboxes: {len(normalized_boxes)}")
+        
+        for seed in seeds:
+            print(f"Current seed is : {seed}")
+            seed_everything(seed)
 
-    prompt = "a golden retriever and a german shepherd and a boston terrier and an english bulldog and a border collie in a pool"
-    subject_token_indices = [[2, 3], [6, 7], [10, 11], [14, 15], [18, 19]]
+            # start stopwatch
+            start = time.time()
 
-    run(boxes, prompt, subject_token_indices, init_step_size=18, final_step_size=5)
+            start_code = torch.randn([1, 4, 64, 64], device=device) # decoded into 512×512 pixel images
+            
+            editor = BoundedAttention(
+                normalized_boxes,
+                prompt,
+                tokens,
+                list(range(12, 20)),
+                list(range(12, 20)),
+                cross_mask_layers=list(range(14, 20)),
+                self_mask_layers=list(range(14, 20)),
+                filter_token_indices=None,
+                eos_token_index=None,
+                cross_loss_coef=1.5,
+                self_loss_coef=0.5,
+                max_guidance_iter=15,
+                max_guidance_iter_per_step=5,
+                start_step_size=18,
+                end_step_size=5,
+                loss_stopping_value=0.2,
+                min_clustering_step=15,
+                num_clusters_per_box=3,
+            )
 
+            register_attention_editor_diffusers(model, editor)
+            images = model(prompt, latents=start_code, guidance_scale=7.5)
+
+            # end stopwatch
+            end = time.time()
+            # save to logger
+            l.log_time_run(start, end)
+
+            #save the newly generated image
+            image = images[0]
+            image_pil = to_pil(image) # convert tensor to PIL image
+
+            image_pil.save(output_path + "/" + str(seed) + ".jpg")  # save
+            gen_images.append(image)
+            image_for_draw = (image * 255).clamp(0, 255).to(torch.uint8)
+            #draw the bounding boxes
+            image=torchvision.utils.draw_bounding_boxes(image_for_draw,
+                                                        torch.Tensor(bboxes),
+                                                        labels=phrases,
+                                                        colors=['green', 'green', 'green', 'green', 'green', 'green', 'green', 'green', 'green'],
+                                                        width=4,
+                                                        font='font.ttf',
+                                                        font_size=20)
+            #list of tensors
+            gen_bboxes_images.append(image)
+            tf.to_pil_image(image).save(output_path+str(seed)+"_bboxes.png")
+
+        # save a grid of results across all seeds without bboxes
+        tf.to_pil_image(torchvision.utils.make_grid(tensor=gen_images,nrow=4,padding=0)).save(output_path +"/"+ bench[id]['prompt'] + ".png")
+
+        # save a grid of results across all seeds with bboxes
+        tf.to_pil_image(torchvision.utils.make_grid(tensor=gen_bboxes_images,nrow=4,padding=0)).save(output_path +"/"+ bench[id]['prompt'] + "_bboxes.png")
+
+    # log gpu stats
+    l.log_gpu_memory_instance()
+    # save to csv_file
+    l.save_log_to_csv(model_name)
+    print("End of generation process")
 
 if __name__ == "__main__":
     main()
