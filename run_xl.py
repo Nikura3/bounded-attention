@@ -60,7 +60,7 @@ def find_sublist(full_list, sublist):
     return None
 
 
-def normalize_data(data, size=512):
+def normalize_data(data, size=1024):
     return [ [coord / size for coord in box] for box in data ]
 
 def read_prompts_csv(path):
@@ -93,12 +93,10 @@ def load_model(device):
 
 
 def main():
-    height = 512
-    width = 512
-    seeds = range(1,17)
+    seeds = range(1,2)
     bench = read_prompts_csv(os.path.join("prompts","shortPromptCollection.csv"))
 
-    model_name="shortPromptCollection-BA"
+    model_name="shortPromptCollection-BAXL"
         
     if (not os.path.isdir("./results/"+model_name)):
         os.makedirs("./results/"+model_name)
@@ -167,16 +165,14 @@ def main():
             # start stopwatch
             start = time.time()
 
-            start_code = torch.randn([1, 4, 64, 64], device=device) # decoded into 512×512 pixel images
+            start_code = torch.randn([1, 4, 128, 128], device=device)
             
             editor = BoundedAttention(
                 normalized_boxes,
                 prompt,
                 tokens,
-                list(range(12, 20)),
-                list(range(12, 20)),
-                cross_mask_layers=list(range(14, 20)),
-                self_mask_layers=list(range(14, 20)),
+                list(range(70, 82)),
+                list(range(70, 82)),
                 filter_token_indices=None,
                 eos_token_index=None,
                 cross_loss_coef=1.5,
@@ -191,7 +187,7 @@ def main():
             )
 
             register_attention_editor_diffusers(model, editor)
-            images = model(prompt, latents=start_code, guidance_scale=7.5)
+            images = model(prompt, latents=start_code, guidance_scale=7.5).images
 
             # end stopwatch
             end = time.time()
@@ -200,14 +196,18 @@ def main():
 
             #save the newly generated image
             image = images[0]
-            image_pil = to_pil(image) # convert tensor to PIL image
+            image.save(output_path + "/" + str(seed) + ".jpg")  # save
+            gen_images.append(tf.pil_to_tensor(image))
 
-            image_pil.save(output_path + "/" + str(seed) + ".jpg")  # save
-            gen_images.append(image)
-            image_for_draw = (image * 255).clamp(0, 255).to(torch.uint8)
+            # Scale bboxes from 512 → 1024
+            scaled_bboxes = [[coord * 2 for coord in box] for box in bboxes]
+
+            # Convert image to uint8 tensor
+            image_tensor = tf.pil_to_tensor(image).to(torch.uint8)
+
             #draw the bounding boxes
-            image=torchvision.utils.draw_bounding_boxes(image_for_draw,
-                                                        torch.Tensor(bboxes),
+            image=torchvision.utils.draw_bounding_boxes(image_tensor,
+                                                        torch.tensor(scaled_bboxes, dtype=torch.int),
                                                         labels=phrases,
                                                         colors=['green', 'green', 'green', 'green', 'green', 'green', 'green', 'green', 'green'],
                                                         width=4,
